@@ -214,8 +214,16 @@ namespace drachtio {
 			assert( leg ) ;
 
 			SD_Insert(m_dialogs, dlg);
-      m_pClientController->addDialogForTransaction( dlg->getTransactionId(), strDialogId ) ;		
+      m_pClientController->addDialogForTransaction( dlg->getTransactionId(), strDialogId ) ;
+      haPersistDialog( dlg ) ;
 		}
+
+		// high availability: dialog replication hooks (no-ops unless --ha-enabled)
+		void haPersistDialog( std::shared_ptr<SipDialog> dlg ) ;   // save state + acquire ownership
+		void haUpdateDialog( std::shared_ptr<SipDialog> dlg ) ;    // re-save state after a change
+		void haRemoveDialog( const std::string& dialogId ) ;       // delete state + release ownership
+		void haRecordRefresh( std::shared_ptr<SipDialog> dlg ) ;   // persist a received session refresh
+		void addDialogDirect( std::shared_ptr<SipDialog> dlg ) ;   // recovery: insert without a client transaction
 		bool findDialogByLeg( nta_leg_t* leg, std::shared_ptr<SipDialog>& dlg ) {
 			/* look in invites-in-progress first */
 			std::shared_ptr<IIP> iip;
@@ -226,6 +234,9 @@ namespace drachtio {
 			}
 			dlg = iip->dlg() ;
 			return true ;
+		}
+		bool findDialogById( const string& dialogId, std::shared_ptr<SipDialog>& dlg ) {
+			return SD_FindByDialogId(m_dialogs, dialogId, dlg);
 		}
 		bool findDialogByCallId( const string& strCallId, std::shared_ptr<SipDialog>& dlg ) {
 			string strDialogId = strCallId + ";uas";

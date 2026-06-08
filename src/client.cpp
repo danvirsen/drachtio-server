@@ -145,6 +145,27 @@ namespace drachtio {
             }
             createResponseMsg( tokens[0], msgResponse ) ;
         }
+        else if( 0 == tokens[1].compare("reattach")) {
+            /* HA: after a failover the application reconnects and re-attaches the dialogs it still
+               owns so that in-dialog requests (re-INVITE/BYE) route back to it on the new instance.
+               format: <msgId>|reattach|<dialogId[,dialogId...]> */
+            if( tokens.size() < 3 || tokens[2].empty() ) {
+                createResponseMsg( tokens[0], msgResponse, false, "reattach requires a dialog id list" ) ;
+                return true ;
+            }
+            vector<string> dialogIds ;
+            boost::split( dialogIds, tokens[2], boost::is_any_of(",") ) ;
+            int n = 0 ;
+            for( auto& d : dialogIds ) {
+                boost::trim(d) ;
+                if( d.empty() ) continue ;
+                if( m_controller.reattachDialog( shared_from_this(), d, "" ) ) n++ ;
+            }
+            DR_LOG(log_info) << "Client::processClientMessage - reattach bound " << n << " of " << dialogIds.size() << " dialog(s)" ;
+            string res = "reattached " + std::to_string(n) + " of " + std::to_string(dialogIds.size()) ;
+            createResponseMsg( tokens[0], msgResponse, n > 0, res.c_str() ) ;
+            return true ;
+        }
         else if( 0 == tokens[1].compare("authenticate")) {
             string secret = tokens[2] ;
             if (tokens.size() > 3) {

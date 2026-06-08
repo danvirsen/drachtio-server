@@ -1,0 +1,55 @@
+# Keepalived configuration for drachtio-server active/passive HA.
+#
+# Simpler alternative to Pacemaker: Keepalived owns a floating virtual IP via VRRP.
+# Only the MASTER holds the VIP and runs drachtio. On failover the BACKUP becomes
+# MASTER, takes the VIP, and the notify_master script (re)starts drachtio with
+# --recover-on-start so dialogs are loaded from redis before SIP traffic resumes.
+#
+# Install to /etc/keepalived/keepalived.conf on BOTH nodes (adjust priority/state).
+# Put ha/check_drachtio.sh and ha/notify.sh on both nodes under /etc/keepalived/.
+
+global_defs {
+    router_id drachtio_ha
+    enable_script_security
+    script_user root
+}
+
+# Health check: is the local drachtio process answering?
+vrrp_script chk_drachtio {
+    script "/etc/keepalived/check_drachtio.sh"
+    interval 2          # run every 2s
+    timeout 3
+    fall 2              # 2 failures -> down
+    rise 2              # 2 successes -> up
+    weight -20          # lower priority when drachtio is unhealthy
+}
+
+vrrp_instance VI_DRACHTIO {
+    # NODE 1: state MASTER, priority 150
+    # NODE 2: state BACKUP, priority 100
+    state MASTER
+    interface eth0
+    virtual_router_id 51
+    priority 150
+    advert_int 1
+
+    authentication {
+        auth_type PASS
+        auth_pass changeme
+    }
+
+    # The floating SIP signaling address the SBC / load balancer targets.
+    virtual_ipaddress {
+        10.0.0.100/24 dev eth0
+    }
+
+    track_script {
+        chk_drachtio
+    }
+
+    # When this node becomes MASTER, start drachtio WITH recovery.
+    notify_master "/etc/keepalived/notify.sh master"
+    # When this node drops to BACKUP, stop the local drachtio (only one active).
+    notify_backup "/etc/keepalived/notify.sh backup"
+    notify_fault  "/etc/keepalived/notify.sh fault"
+}

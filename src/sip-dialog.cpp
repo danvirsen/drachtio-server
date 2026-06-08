@@ -95,7 +95,15 @@ namespace drachtio {
 		if( sip->sip_content_type ) {
 			string hvalue ;
 			parseGenericHeader( sip->sip_content_type->c_common, hvalue ) ;
-			if( !hvalue.empty() ) this->setRemoteContentType( hvalue ) ;			
+			if( !hvalue.empty() ) this->setRemoteContentType( hvalue ) ;
+		}
+
+		/* capture dialog addresses for HA recovery (we are UAS: local=To, remote=From) */
+		{
+			su_home_t* home = msg_home(msg) ;
+			if (sip->sip_to && sip->sip_to->a_url) { char* s = url_as_string(home, sip->sip_to->a_url); if (s) { m_fromUri = s; su_free(home, s);} }
+			if (sip->sip_from && sip->sip_from->a_url) { char* s = url_as_string(home, sip->sip_from->a_url); if (s) { m_toUri = s; su_free(home, s);} }
+			if (sip->sip_contact && sip->sip_contact->m_url) { char* s = url_as_string(home, sip->sip_contact->m_url); if (s) { m_remoteContact = s; su_free(home, s);} }
 		}
 
 		// UDP nat check: if no Record-Route and Contact != source address:port, then set a RouteUri to the source address:port
@@ -166,7 +174,14 @@ namespace drachtio {
 		if( sip->sip_content_type ) {
 			string hvalue ;
 			parseGenericHeader( sip->sip_content_type->c_common, hvalue ) ;
-			if( !hvalue.empty() ) this->setLocalContentType( hvalue ) ;			
+			if( !hvalue.empty() ) this->setLocalContentType( hvalue ) ;
+		}
+
+		/* capture dialog addresses for HA recovery (we are UAC: local=From, remote=To) */
+		{
+			su_home_t* home = msg_home(msg) ;
+			if (sip->sip_from && sip->sip_from->a_url) { char* s = url_as_string(home, sip->sip_from->a_url); if (s) { m_fromUri = s; su_free(home, s);} }
+			if (sip->sip_to && sip->sip_to->a_url) { char* s = url_as_string(home, sip->sip_to->a_url); if (s) { m_toUri = s; su_free(home, s);} }
 		}
 
     su_sockaddr_t const *su = msg_addr(msg);
@@ -250,6 +265,87 @@ namespace drachtio {
     theOneAndOnlyController->getClientController()->removeNetTransaction(this->getTransactionId());
 	}
 
+	/* recovery: rebuild a dialog from persisted state and a freshly recreated leg */
+	SipDialog::SipDialog( const DialogState& state, nta_leg_t* leg ) :
+		m_type( 0 == state.role ? we_are_uac : we_are_uas ), m_recentSipStatus(state.recentSipStatus),
+		m_startTime(state.startTime), m_connectTime(state.connectTime), m_endTime(0), m_releaseCause(no_release),
+		m_refresher( (SessionRefresher_t) state.refresher ), m_timerSessionRefresh(NULL), m_ppSelf(NULL),
+		m_nSessionExpiresSecs(state.sessionExpiresSecs), m_nMinSE(state.minSE), m_tp(NULL), m_leg(leg),
+		m_timerG(NULL), m_durationTimerG(0), m_timerH(NULL), m_orqAck(nullptr), m_orq(nullptr), m_seq(state.seq),
+		m_bInviteDialog(true), m_bAlerting(false), m_nSessionTimerDuration(0),
+		m_timeArrive(std::chrono::steady_clock::now()), m_bAckBye(false), m_tmArrival(sip_now()),
+		m_bDestroyAckOnClose(false), m_irqUpdate(NULL)
+	{
+		m_dialogId = state.dialogId;
+		m_transactionId = state.transactionId;
+		m_strCallId = state.callId;
+		if (!state.localTag.empty()) setLocalTag(state.localTag.c_str());
+		if (!state.remoteTag.empty()) setRemoteTag(state.remoteTag.c_str());
+		m_localEndpoint.m_strSdp = state.localSdp;
+		m_remoteEndpoint.m_strSdp = state.remoteSdp;
+		m_localEndpoint.m_strContentType = state.localContentType;
+		m_remoteEndpoint.m_strContentType = state.remoteContentType;
+		m_localEndpoint.m_strSignalingAddress = state.localSignalingAddress;
+		m_localEndpoint.m_signalingPort = state.localSignalingPort;
+		m_remoteEndpoint.m_strSignalingAddress = state.remoteSignalingAddress;
+		m_remoteEndpoint.m_signalingPort = state.remoteSignalingPort;
+		m_strLocalContact = state.localContact;
+		m_transportAddress = state.transportAddress;
+		m_transportPort = state.transportPort;
+		m_protocol = state.protocol;
+		m_sourceAddress = state.sourceAddress;
+		m_sourcePort = state.sourcePort;
+		m_routeUri = state.routeUri;
+		m_fromUri = state.fromUri;
+		m_toUri = state.toUri;
+		m_remoteContact = state.remoteContact;
+		m_strAppName = state.appName;
+		m_lastRefreshTs = state.lastRefreshTs;
+		m_bRecovered = true;
+
+		DR_LOG(log_info) << "SipDialog::SipDialog - RECOVERED dialog " << m_dialogId
+			<< " call-id " << m_strCallId << " role " << (we_are_uac == m_type ? "UAC" : "UAS")
+			<< " leg " << std::hex << (void *) m_leg;
+	}
+
+	DialogState SipDialog::toState(void) const {
+		DialogState s;
+		s.dialogId = m_dialogId;
+		s.callId = m_strCallId;
+		s.transactionId = m_transactionId;
+		s.role = (we_are_uac == m_type) ? 0 : 1;
+		s.localTag = m_localEndpoint.m_strTag;
+		s.remoteTag = m_remoteEndpoint.m_strTag;
+		s.fromUri = m_fromUri;
+		s.toUri = m_toUri;
+		s.remoteContact = m_remoteContact;
+		s.localSdp = m_localEndpoint.m_strSdp;
+		s.remoteSdp = m_remoteEndpoint.m_strSdp;
+		s.localContentType = m_localEndpoint.m_strContentType;
+		s.remoteContentType = m_remoteEndpoint.m_strContentType;
+		s.localContact = m_strLocalContact;
+		s.localSignalingAddress = m_localEndpoint.m_strSignalingAddress;
+		s.localSignalingPort = m_localEndpoint.m_signalingPort;
+		s.remoteSignalingAddress = m_remoteEndpoint.m_strSignalingAddress;
+		s.remoteSignalingPort = m_remoteEndpoint.m_signalingPort;
+		s.transportAddress = m_transportAddress;
+		s.transportPort = m_transportPort;
+		s.protocol = m_protocol;
+		s.sourceAddress = m_sourceAddress;
+		s.sourcePort = m_sourcePort;
+		s.routeUri = m_routeUri;
+		s.recentSipStatus = m_recentSipStatus;
+		s.startTime = m_startTime;
+		s.connectTime = m_connectTime;
+		s.seq = m_seq;
+		s.sessionExpiresSecs = m_nSessionExpiresSecs;
+		s.minSE = m_nMinSE;
+		s.refresher = (int) m_refresher;
+		s.lastRefreshTs = m_lastRefreshTs;
+		s.appName = m_strAppName;
+		return s;
+	}
+
 	std::ostream& operator<<(std::ostream& os, const SipDialog& dlg) {
     sip_time_t alive = sip_now() - dlg.m_tmArrival;
     os << "dialogId:" << dlg.dialogId() << std::dec <<
@@ -313,6 +409,15 @@ namespace drachtio {
 
 		/* if we are the refresher, then we want the timer to go off halfway through the interval */
 		if( areWeRefresher() ) {
+			/* HA: only the instance that currently OWNS the dialog may emit refreshing re-INVITEs.
+			   A non-owner keeps the refresher role but does not arm the send timer, so we never
+			   send a session refresh from more than one instance simultaneously. */
+			if( theOneAndOnlyController->isHaEnabled() &&
+					!theOneAndOnlyController->getDialogStore()->isOwner( getDialogId() ) ) {
+				DR_LOG(log_info) << "SipDialog::setSessionTimer: " << getCallId()
+					<< " HA - not the owner; deferring refresh-send timer to the owning instance" ;
+				return ;
+			}
 			m_nSessionTimerDuration /= 2 ;
 			m_nSessionTimerDuration += (rand() % 10000) - 5000 ;
 		}
@@ -337,9 +442,22 @@ namespace drachtio {
 			theOneAndOnlyController->getDialogController()->notifyRefreshDialog( shared_from_this() ) ;
 		}
 		else {
+			/* HA: a session refresh may have landed on a DIFFERENT instance. Before tearing the
+			   call down, consult the shared lastRefreshTs in redis; if the peer refreshed recently
+			   (on any instance), reschedule our teardown timer instead of killing a live call. */
+			if( theOneAndOnlyController->isHaEnabled() ) {
+				long last = theOneAndOnlyController->getDialogStore()->getLastRefresh( getDialogId() ) ;
+				long now = (long) time(NULL) ;
+				if( last > 0 && (now - last) < (long) m_nSessionExpiresSecs ) {
+					DR_LOG(log_info) << "SipDialog::doSessionTimerHandling - HA: session for call-id " << getCallId()
+						<< " was refreshed " << (now - last) << "s ago on another instance; rescheduling teardown timer" ;
+					su_timer_set( m_timerSessionRefresh, session_timer_handler, (su_timer_arg_t *) m_ppSelf ) ;
+					return ;
+				}
+			}
 			//tear down the leg, and notify the client
-			DR_LOG(log_info) << "SipDialog::doSessionTimerHandling - tearing down sip dialog with call-id " << getCallId() 
-				<< " because remote peer did not refresh the session within the specified interval"  ; 
+			DR_LOG(log_info) << "SipDialog::doSessionTimerHandling - tearing down sip dialog with call-id " << getCallId()
+				<< " because remote peer did not refresh the session within the specified interval"  ;
 			theOneAndOnlyController->getDialogController()->notifyTerminateStaleDialog( shared_from_this() ) ;
 		}
 

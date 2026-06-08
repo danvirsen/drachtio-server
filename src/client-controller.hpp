@@ -80,6 +80,9 @@ namespace drachtio {
     void addNetTransaction( client_ptr client, const string& transactionId );
     void addApiRequest( client_ptr client, const string& clientMsgId );
     void removeDialog( const string& dialogId ) ;
+    bool getAppNameForDialog( const string& dialogId, string& appName ) ;
+    /* HA reattach: bind a recovered dialog to a reconnected client socket */
+    bool reattachDialog( client_ptr client, const string& dialogId, const string& appName ) ;
     void removeAppTransaction( const string& transactionId ) ;
     void removeNetTransaction( const string& transactionId ) ;
     void removeApiRequest( const string& clientMsgId ) ;

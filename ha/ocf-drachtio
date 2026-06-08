@@ -1,0 +1,160 @@
+#!/bin/sh
+#
+# OCF resource agent for drachtio-server high availability.
+#
+# Active/passive model: exactly one node runs drachtio at a time, fronted by a
+# floating virtual IP (managed by Pacemaker, or by Keepalived - see ha/keepalived.conf.sample).
+# On failover the surviving node is started with --recover-on-start, which bulk-loads
+# all SIP dialogs from the shared redis DialogStore and recreates the Sofia legs BEFORE
+# the SIP event loop begins, so in-dialog requests (re-INVITE / BYE) that arrive after
+# the switch are handled and no call drops.
+#
+# Install as:  /usr/lib/ocf/resource.d/drachtio/drachtio   (chmod +x)
+#
+# Pacemaker example (promotable not required - plain primitive + colocation with the VIP):
+#
+#   primitive p_drachtio ocf:drachtio:drachtio \
+#       params binary="/usr/local/bin/drachtio" \
+#              config="/etc/drachtio.conf.xml" \
+#              opts="--ha-enabled --ha-redis-sentinels 10.0.0.10:26379,10.0.0.11:26379 --ha-redis-master mymaster" \
+#              pidfile="/var/run/drachtio.pid" \
+#       op monitor interval="5s" timeout="20s" \
+#       op start   timeout="60s" \
+#       op stop    timeout="30s"
+#   colocation c_drachtio_on_vip inf: p_drachtio vip_resource
+#   order o_vip_then_drachtio inf: vip_resource p_drachtio
+#
+#######################################################################
+# Initialization:
+
+: ${OCF_FUNCTIONS_DIR=${OCF_ROOT}/lib/heartbeat}
+. ${OCF_FUNCTIONS_DIR}/ocf-shellfuncs 2>/dev/null || {
+    # minimal fallbacks if the heartbeat shellfuncs are not present
+    OCF_SUCCESS=0; OCF_ERR_GENERIC=1; OCF_ERR_ARGS=2;
+    OCF_ERR_UNIMPLEMENTED=3; OCF_ERR_PERM=4; OCF_ERR_INSTALLED=5;
+    OCF_ERR_CONFIGURED=6; OCF_NOT_RUNNING=7;
+    ocf_log() { shift; echo "$*"; }
+}
+
+#######################################################################
+
+OCF_RESKEY_binary_default="/usr/local/bin/drachtio"
+OCF_RESKEY_config_default="/etc/drachtio.conf.xml"
+OCF_RESKEY_pidfile_default="/var/run/drachtio.pid"
+OCF_RESKEY_opts_default=""
+OCF_RESKEY_user_default="root"
+OCF_RESKEY_recover_timeout_default="30"
+
+: ${OCF_RESKEY_binary=${OCF_RESKEY_binary_default}}
+: ${OCF_RESKEY_config=${OCF_RESKEY_config_default}}
+: ${OCF_RESKEY_pidfile=${OCF_RESKEY_pidfile_default}}
+: ${OCF_RESKEY_opts=${OCF_RESKEY_opts_default}}
+: ${OCF_RESKEY_user=${OCF_RESKEY_user_default}}
+: ${OCF_RESKEY_recover_timeout=${OCF_RESKEY_recover_timeout_default}}
+
+drachtio_meta_data() {
+    cat <<END
+<?xml version="1.0"?>
+<!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+<resource-agent name="drachtio" version="1.0">
+<version>1.0</version>
+<longdesc lang="en">
+OCF resource agent for drachtio-server with redis-backed dialog recovery.
+The active node owns the SIP dialogs in redis; on failover the new node is
+started with --recover-on-start to reload them before serving SIP traffic.
+</longdesc>
+<shortdesc lang="en">drachtio SIP server (HA)</shortdesc>
+<parameters>
+<parameter name="binary"><longdesc lang="en">Path to the drachtio binary.</longdesc><shortdesc lang="en">binary</shortdesc><content type="string" default="${OCF_RESKEY_binary_default}"/></parameter>
+<parameter name="config"><longdesc lang="en">Path to drachtio.conf.xml.</longdesc><shortdesc lang="en">config</shortdesc><content type="string" default="${OCF_RESKEY_config_default}"/></parameter>
+<parameter name="pidfile"><longdesc lang="en">PID file path.</longdesc><shortdesc lang="en">pidfile</shortdesc><content type="string" default="${OCF_RESKEY_pidfile_default}"/></parameter>
+<parameter name="opts"><longdesc lang="en">Extra command line options, including the --ha-* flags. --recover-on-start is added automatically by this agent on start.</longdesc><shortdesc lang="en">opts</shortdesc><content type="string" default="${OCF_RESKEY_opts_default}"/></parameter>
+<parameter name="user"><longdesc lang="en">User to run drachtio as.</longdesc><shortdesc lang="en">user</shortdesc><content type="string" default="${OCF_RESKEY_user_default}"/></parameter>
+<parameter name="recover_timeout"><longdesc lang="en">Seconds to wait for the pidfile (recovery completion) on start.</longdesc><shortdesc lang="en">recover_timeout</shortdesc><content type="integer" default="${OCF_RESKEY_recover_timeout_default}"/></parameter>
+</parameters>
+<actions>
+<action name="start"        timeout="60s" />
+<action name="stop"         timeout="30s" />
+<action name="monitor"      timeout="20s" interval="5s" depth="0" />
+<action name="meta-data"    timeout="5s" />
+<action name="validate-all" timeout="20s" />
+</actions>
+</resource-agent>
+END
+}
+
+drachtio_pid() {
+    [ -f "$OCF_RESKEY_pidfile" ] && cat "$OCF_RESKEY_pidfile" 2>/dev/null
+}
+
+drachtio_monitor() {
+    pid=$(drachtio_pid)
+    [ -z "$pid" ] && return $OCF_NOT_RUNNING
+    if kill -0 "$pid" 2>/dev/null; then
+        return $OCF_SUCCESS
+    fi
+    return $OCF_NOT_RUNNING
+}
+
+drachtio_start() {
+    drachtio_monitor
+    [ $? -eq $OCF_SUCCESS ] && { ocf_log info "drachtio already running"; return $OCF_SUCCESS; }
+
+    # --recover-on-start makes drachtio bulk-load dialogs from redis BEFORE the event
+    # loop; the pidfile is the completion signal. The active node OWNS the dialogs, so
+    # recovery is a safe no-op on a cold cluster (empty redis).
+    ocf_log info "starting drachtio with recovery: $OCF_RESKEY_binary -f $OCF_RESKEY_config $OCF_RESKEY_opts --recover-on-start --daemon"
+    PID=$(su - "$OCF_RESKEY_user" -c "$OCF_RESKEY_binary -f $OCF_RESKEY_config $OCF_RESKEY_opts --recover-on-start --daemon")
+    rc=$?
+    if [ $rc -ne 0 ] || [ -z "$PID" ]; then
+        ocf_log err "drachtio failed to start (rc=$rc)"
+        return $OCF_ERR_GENERIC
+    fi
+    echo "$PID" > "$OCF_RESKEY_pidfile"
+
+    # wait until it is actually serving (process alive)
+    waited=0
+    while [ $waited -lt "$OCF_RESKEY_recover_timeout" ]; do
+        if drachtio_monitor; then
+            ocf_log info "drachtio started and recovered (pid $PID)"
+            return $OCF_SUCCESS
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    ocf_log err "drachtio did not become healthy within ${OCF_RESKEY_recover_timeout}s"
+    return $OCF_ERR_GENERIC
+}
+
+drachtio_stop() {
+    pid=$(drachtio_pid)
+    if [ -z "$pid" ]; then
+        rm -f "$OCF_RESKEY_pidfile"
+        return $OCF_SUCCESS
+    fi
+    kill -TERM "$pid" 2>/dev/null
+    waited=0
+    while [ $waited -lt 20 ]; do
+        kill -0 "$pid" 2>/dev/null || { rm -f "$OCF_RESKEY_pidfile"; return $OCF_SUCCESS; }
+        sleep 1
+        waited=$((waited + 1))
+    done
+    ocf_log warn "drachtio did not stop gracefully, sending KILL"
+    kill -KILL "$pid" 2>/dev/null
+    rm -f "$OCF_RESKEY_pidfile"
+    return $OCF_SUCCESS
+}
+
+drachtio_validate() {
+    [ -x "$OCF_RESKEY_binary" ] || { ocf_log err "binary not executable: $OCF_RESKEY_binary"; return $OCF_ERR_INSTALLED; }
+    return $OCF_SUCCESS
+}
+
+case "$1" in
+    meta-data)      drachtio_meta_data; exit $OCF_SUCCESS ;;
+    start)          drachtio_validate && drachtio_start; exit $? ;;
+    stop)           drachtio_stop; exit $? ;;
+    monitor|status) drachtio_monitor; exit $? ;;
+    validate-all)   drachtio_validate; exit $? ;;
+    *)              echo "Usage: $0 {start|stop|monitor|meta-data|validate-all}"; exit $OCF_ERR_UNIMPLEMENTED ;;
+esac

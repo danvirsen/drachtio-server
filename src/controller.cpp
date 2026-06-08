@@ -292,7 +292,8 @@ namespace drachtio {
         m_nHomerPort(0), m_nHomerId(0), m_mtu(0), m_bAggressiveNatDetection(false), m_bMemoryDebug(false),
         m_nPrometheusPort(0), m_strPrometheusAddress("0.0.0.0"), m_tcpKeepaliveSecs(UINT16_MAX), m_bDumpMemory(false),
         m_minTlsVersion(0), m_bDisableNatDetection(false), m_pBlacklist(nullptr), m_bAlwaysSend180(false), 
-        m_bGloballyReadableLogs(false), m_bTlsVerifyClientCert(false), m_bRejectRegisterWithNoRealm(false) {
+        m_bGloballyReadableLogs(false), m_bTlsVerifyClientCert(false), m_bRejectRegisterWithNoRealm(false),
+        m_bHaEnabled(false), m_bRecoverOnStart(false), m_haRedisPort(0), m_haOwnershipTtlSecs(30) {
 
         getEnv();
 
@@ -419,7 +420,9 @@ namespace drachtio {
                 {"daemon", no_argument,       &m_bDaemonize, true},
                 {"noconfig", no_argument,       &m_bNoConfig, true},
                 {"reject-register-with-no-realm", no_argument, &m_bRejectRegisterWithNoRealm, true},
-                
+                {"ha-enabled", no_argument, &m_bHaEnabled, true},
+                {"recover-on-start", no_argument, &m_bRecoverOnStart, true},
+
                 /* These options don't set a flag.
                  We distinguish them by their indices. */
                 {"file",    required_argument, 0, 'f'},
@@ -462,6 +465,13 @@ namespace drachtio {
                 {"blacklist-redis-master", required_argument, 0, 'W'},
                 {"blacklist-redis-password", required_argument, 0, 'X'},
                 {"tls-cipherlist", required_argument, 0, 0},
+                {"ha-instance-id", required_argument, 0, 0},
+                {"ha-redis-address", required_argument, 0, 0},
+                {"ha-redis-port", required_argument, 0, 0},
+                {"ha-redis-password", required_argument, 0, 0},
+                {"ha-redis-sentinels", required_argument, 0, 0},
+                {"ha-redis-master", required_argument, 0, 0},
+                {"ha-ownership-ttl", required_argument, 0, 0},
                 {"version",    no_argument, 0, 'v'},
                 {0, 0, 0, 0}
             };
@@ -481,6 +491,27 @@ namespace drachtio {
                     if (strcmp(long_options[option_index].name, "tls-cipherlist") == 0) {
                       m_tlsCipherList = optarg;
                       break;
+                    }
+                    if (strcmp(long_options[option_index].name, "ha-instance-id") == 0) {
+                      m_haInstanceId = optarg; break;
+                    }
+                    if (strcmp(long_options[option_index].name, "ha-redis-address") == 0) {
+                      m_haRedisAddress = optarg; break;
+                    }
+                    if (strcmp(long_options[option_index].name, "ha-redis-port") == 0) {
+                      m_haRedisPort = ::atoi(optarg); break;
+                    }
+                    if (strcmp(long_options[option_index].name, "ha-redis-password") == 0) {
+                      m_haRedisPassword = optarg; break;
+                    }
+                    if (strcmp(long_options[option_index].name, "ha-redis-sentinels") == 0) {
+                      m_haRedisSentinels = optarg; break;
+                    }
+                    if (strcmp(long_options[option_index].name, "ha-redis-master") == 0) {
+                      m_haRedisMaster = optarg; break;
+                    }
+                    if (strcmp(long_options[option_index].name, "ha-ownership-ttl") == 0) {
+                      m_haOwnershipTtlSecs = ::atoi(optarg); break;
                     }
                     /* If this option set a flag, do nothing else now. */
                     if (long_options[option_index].flag != 0)
@@ -757,6 +788,15 @@ namespace drachtio {
         cerr << "    --blacklist-redis-sentinels        comma-separated list of redis sentinels in ip:port format" << endl;
         cerr << "    --blacklist-redis-password         password for redis server, if required" << endl;
         cerr << "    --daemon                           Run the process as a daemon background process" << endl ;
+        cerr << "    --ha-enabled                       Enable high-availability dialog replication to redis" << endl ;
+        cerr << "    --recover-on-start                 On startup, recover all dialogs from redis (use on the node being promoted)" << endl ;
+        cerr << "    --ha-instance-id                   Unique id for this node (default: {hostname}-{pid})" << endl ;
+        cerr << "    --ha-redis-address                 redis host for the HA dialog store" << endl ;
+        cerr << "    --ha-redis-port                    redis port for the HA dialog store (default 6379)" << endl ;
+        cerr << "    --ha-redis-password                redis password for the HA dialog store" << endl ;
+        cerr << "    --ha-redis-sentinels               comma-separated redis sentinels (ip:port) for the HA dialog store" << endl ;
+        cerr << "    --ha-redis-master                  redis sentinel master name for the HA dialog store" << endl ;
+        cerr << "    --ha-ownership-ttl                 redis dialog ownership TTL in seconds (default 30)" << endl ;
         cerr << "    --cert-file                        TLS certificate file" << endl ;
         cerr << "    --chain-file                       TLS certificate chain file" << endl ;
         cerr << "-c, --contact                          Sip contact url to bind to (see /etc/drachtio.conf.xml for examples)" << endl ;
@@ -882,6 +922,25 @@ namespace drachtio {
         if (p) {
             m_redisRefreshSecs = boost::lexical_cast<unsigned int>(p); ;
         }
+        p = std::getenv("DRACHTIO_HA_ENABLED");
+        if (p && ::atoi(p) == 1) m_bHaEnabled = true;
+        p = std::getenv("DRACHTIO_RECOVER_ON_START");
+        if (p && ::atoi(p) == 1) m_bRecoverOnStart = true;
+        p = std::getenv("DRACHTIO_HA_INSTANCE_ID");
+        if (p) m_haInstanceId = p;
+        p = std::getenv("DRACHTIO_HA_REDIS_ADDRESS");
+        if (p) m_haRedisAddress = p;
+        p = std::getenv("DRACHTIO_HA_REDIS_PORT");
+        if (p) m_haRedisPort = boost::lexical_cast<unsigned int>(p);
+        p = std::getenv("DRACHTIO_HA_REDIS_PASSWORD");
+        if (p) m_haRedisPassword = p;
+        p = std::getenv("DRACHTIO_HA_REDIS_SENTINELS");
+        if (p) m_haRedisSentinels = p;
+        p = std::getenv("DRACHTIO_HA_REDIS_MASTER");
+        if (p) m_haRedisMaster = p;
+        p = std::getenv("DRACHTIO_HA_OWNERSHIP_TTL");
+        if (p && ::atoi(p) > 0) m_haOwnershipTtlSecs = ::atoi(p);
+
         p = std::getenv("DRACHTIO_USER_AGENT_OPTIONS_AUTO_RESPOND");
         if (p) {
             m_strUserAgentAutoAnswerOptions = p;
@@ -1092,8 +1151,121 @@ namespace drachtio {
         }	
     }
 
+    void DrachtioController::initDialogStore(void) {
+        if( !m_bHaEnabled ) {
+            DR_LOG(log_notice) << "DrachtioController::initDialogStore - high availability is disabled";
+            return ;
+        }
+
+        /* derive a stable-ish instance id if none supplied */
+        if( m_haInstanceId.empty() ) {
+            char host[256] = {0};
+            gethostname(host, sizeof(host) - 1);
+            m_haInstanceId = string(host) + "-" + std::to_string((long) getpid());
+        }
+
+        if( !m_haRedisSentinels.empty() && !m_haRedisMaster.empty() ) {
+            DR_LOG(log_notice) << "DrachtioController::initDialogStore - HA dialog store via redis sentinels "
+                << m_haRedisSentinels << ", master " << m_haRedisMaster << ", instance " << m_haInstanceId;
+            m_pDialogStore = std::make_shared<DialogStore>(m_haInstanceId, m_haRedisSentinels, m_haRedisMaster,
+                m_haRedisPassword, m_haOwnershipTtlSecs, true);
+        }
+        else if( !m_haRedisAddress.empty() ) {
+            DR_LOG(log_notice) << "DrachtioController::initDialogStore - HA dialog store via redis "
+                << m_haRedisAddress << ":" << m_haRedisPort << ", instance " << m_haInstanceId;
+            m_pDialogStore = std::make_shared<DialogStore>(m_haInstanceId, m_haRedisAddress,
+                m_haRedisPort ? m_haRedisPort : 6379, m_haRedisPassword, m_haOwnershipTtlSecs);
+        }
+        else {
+            DR_LOG(log_error) << "DrachtioController::initDialogStore - HA enabled but no redis configured; disabling HA";
+            m_bHaEnabled = false;
+        }
+    }
+
+    /* rebuild a Sofia leg from persisted dialog state so in-dialog requests route to it */
+    nta_leg_t* DrachtioController::recreateLeg(const DialogState& st) {
+        su_home_t* h = m_home;
+
+        sip_call_id_t* callid = sip_call_id_make(h, st.callId.c_str());
+
+        /* leg "local" = our From (with our local tag); leg "remote" = To (with peer remote tag) */
+        string fromHdr = "<" + st.fromUri + ">";
+        if( !st.localTag.empty() ) fromHdr += ";tag=" + st.localTag;
+        string toHdr = "<" + st.toUri + ">";
+        if( !st.remoteTag.empty() ) toHdr += ";tag=" + st.remoteTag;
+
+        sip_from_t* from = sip_from_make(h, fromHdr.c_str());
+        sip_to_t*   to   = sip_to_make(h, toHdr.c_str());
+        if( !callid || !from || !to ) {
+            DR_LOG(log_error) << "DrachtioController::recreateLeg - failed to build headers for dialog " << st.dialogId;
+            return nullptr;
+        }
+
+        nta_leg_t* leg = nta_leg_tcreate(m_nta, legCallback, this,
+            SIPTAG_CALL_ID(callid),
+            SIPTAG_FROM(from),
+            SIPTAG_TO(to),
+            TAG_END());
+        if( !leg ) {
+            DR_LOG(log_error) << "DrachtioController::recreateLeg - nta_leg_tcreate failed for dialog " << st.dialogId;
+            return nullptr;
+        }
+
+        /* make sure both dialog tags are registered for in-dialog request matching */
+        if( !st.localTag.empty() )  nta_leg_tag( leg, st.localTag.c_str() );
+        if( !st.remoteTag.empty() ) nta_leg_rtag( leg, st.remoteTag.c_str() );
+
+        /* set the remote target so any request we originate in-dialog reaches the peer */
+        if( !st.remoteContact.empty() ) {
+            string contactHdr = "<" + st.remoteContact + ">";
+            sip_contact_t* contact = sip_contact_make(h, contactHdr.c_str());
+            if( contact ) nta_leg_client_route( leg, NULL, contact );
+        }
+
+        DR_LOG(log_info) << "DrachtioController::recreateLeg - rebuilt leg " << std::hex << (void*) leg
+            << " for dialog " << st.dialogId;
+        return leg;
+    }
+
+    void DrachtioController::recoverDialogsFromRedis(void) {
+        if( !isHaEnabled() ) {
+            DR_LOG(log_notice) << "DrachtioController::recoverDialogsFromRedis - HA not enabled, nothing to recover";
+            return ;
+        }
+        std::vector<DialogState> dialogs;
+        if( !m_pDialogStore->getAllDialogs(dialogs) ) {
+            DR_LOG(log_error) << "DrachtioController::recoverDialogsFromRedis - could not load dialogs from redis";
+            return ;
+        }
+
+        int recovered = 0;
+        for( auto& st : dialogs ) {
+            /* --recover-on-start is a deliberate promotion: forcibly take ownership even if the
+               dead/fenced prior owner's ownership key has not yet expired (TTL up to 30s). Using
+               acquireOwnership (SET NX) here would make a fast failover recover nothing. */
+            if( !m_pDialogStore->claimOwnership(st.dialogId) ) {
+                DR_LOG(log_info) << "DrachtioController::recoverDialogsFromRedis - " << st.dialogId
+                    << " could not claim ownership; skipping";
+                continue;
+            }
+            nta_leg_t* leg = recreateLeg(st);
+            if( !leg ) continue;
+
+            std::shared_ptr<SipDialog> dlg = std::make_shared<SipDialog>(st, leg);
+            m_pDialogController->addDialogDirect(dlg);
+
+            /* restart the session timer fresh (do not try to compute remaining time) */
+            if( st.sessionExpiresSecs > 0 && st.refresher != 0 ) {
+                dlg->setSessionTimer(st.sessionExpiresSecs, (SipDialog::SessionRefresher_t) st.refresher);
+            }
+            recovered++;
+        }
+        DR_LOG(log_notice) << "DrachtioController::recoverDialogsFromRedis - recovered " << recovered
+            << " of " << dialogs.size() << " dialog(s) from redis";
+    }
+
     void DrachtioController::run() {
-        
+
       if( m_bDaemonize ) {
           daemonize() ;
       }
@@ -1258,6 +1430,9 @@ namespace drachtio {
             DR_LOG(log_notice) << "DrachtioController::run - blacklist is disabled";
         }
 
+        // high availability: dialog replication store
+        initDialogStore();
+
         // monitoring
         if (m_nPrometheusPort == 0) m_Config->getPrometheusAddress( m_strPrometheusAddress, m_nPrometheusPort ) ;
         if (m_nPrometheusPort != 0) {
@@ -1394,6 +1569,14 @@ namespace drachtio {
         m_pDialogController = std::make_shared<SipDialogController>( this, &m_clone ) ;
         m_pProxyController = std::make_shared<SipProxyController>( this, &m_clone ) ;
         m_pPendingRequestController = std::make_shared<PendingRequestController>( this ) ;
+
+        /* high availability: on a failover promotion, bulk-recover dialogs from redis
+           AFTER the controllers + NTA agent exist but BEFORE the event loop starts, so
+           recovered legs are registered and ready when the first in-dialog request arrives. */
+        if( m_bRecoverOnStart ) {
+            DR_LOG(log_notice) << "DrachtioController::run - --recover-on-start set; recovering dialogs from redis";
+            recoverDialogsFromRedis() ;
+        }
 
         // set sip timers
         unsigned int t1, t2, t4, t1x64 ;

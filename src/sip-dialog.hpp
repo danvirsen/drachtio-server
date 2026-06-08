@@ -43,6 +43,7 @@ THE SOFTWARE.
 
 
 #include "timer-queue.hpp"
+#include "dialog-state.hpp"
 
 using namespace ::boost::multi_index;
 
@@ -57,9 +58,26 @@ namespace drachtio {
 	class SipDialog : public std::enable_shared_from_this<SipDialog> {
 	public:
 		SipDialog( nta_leg_t* leg, nta_incoming_t* irq, sip_t const *sip, msg_t *msg  ) ;
-		SipDialog( const std::string& transactionId, nta_leg_t* leg, 
+		SipDialog( const std::string& transactionId, nta_leg_t* leg,
 			nta_outgoing_t* orq, sip_t const *sip, msg_t *msg, const std::string& transport ) ;
+		/* recovery constructor: rebuild a dialog from persisted state + a freshly created leg */
+		SipDialog( const DialogState& state, nta_leg_t* leg ) ;
 		~SipDialog() ;
+
+		/* high availability: serialize/inspect dialog state */
+		DialogState toState(void) const ;
+		void setAppName(const std::string& name) { m_strAppName = name; }
+		const std::string& getAppName(void) const { return m_strAppName; }
+		long getLastRefreshTs(void) const { return m_lastRefreshTs; }
+		void setLastRefreshTs(long ts) { m_lastRefreshTs = ts; }
+		void setFromUri(const std::string& u) { m_fromUri = u; }
+		void setToUri(const std::string& u) { m_toUri = u; }
+		void setRemoteContact(const std::string& u) { m_remoteContact = u; }
+		const std::string& getFromUri(void) const { return m_fromUri; }
+		const std::string& getToUri(void) const { return m_toUri; }
+		const std::string& getRemoteContact(void) const { return m_remoteContact; }
+		/* mark this dialog as recovered (no live transactions; timers restarted fresh) */
+		bool isRecovered(void) const { return m_bRecovered; }
 
 		bool operator <(const SipDialog& a) const { return m_tmArrival < a.m_tmArrival; }
 
@@ -95,8 +113,10 @@ namespace drachtio {
 		enum SessionRefresher_t {
 			no_refresher = 0
 			,we_are_refresher
-			,they_are_refresher 
+			,they_are_refresher
 		} ;
+
+		SessionRefresher_t getRefresher(void) const { return m_refresher; }
 
 		bool isInviteDialog(void) { return m_bInviteDialog; }
 
@@ -272,6 +292,14 @@ namespace drachtio {
 		std::string 			m_transportProtocol ;
 
 		std::string			m_strLocalContact;
+
+		// high availability: dialog addresses + app binding for recovery
+		std::string			m_fromUri;
+		std::string			m_toUri;
+		std::string			m_remoteContact;
+		std::string			m_strAppName;
+		long				m_lastRefreshTs = 0;
+		bool				m_bRecovered = false;
 
     /* session timer */
     unsigned long 	m_nSessionExpiresSecs ;

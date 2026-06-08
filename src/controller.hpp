@@ -76,6 +76,7 @@ THE SOFTWARE.
 #include "request-router.hpp"
 #include "stats-collector.hpp"
 #include "blacklist.hpp"
+#include "dialog-store.hpp"
 
 using namespace std ;
 
@@ -127,6 +128,11 @@ namespace drachtio {
     std::shared_ptr<SipProxyController> getProxyController(void) { return m_pProxyController ; }
     su_root_t* getRoot(void) { return m_root; }
     Blacklist* getBlacklist() { return m_pBlacklist; }
+
+    /* high availability dialog replication */
+    std::shared_ptr<DialogStore> getDialogStore(void) { return m_pDialogStore; }
+    bool isHaEnabled(void) { return m_bHaEnabled && m_pDialogStore; }
+    const string& getHaInstanceId(void) { return m_haInstanceId; }
   
     enum severity_levels getCurrentLoglevel() { return m_current_severity_threshold; }
 
@@ -260,6 +266,22 @@ namespace drachtio {
     std::shared_ptr<SipProxyController> m_pProxyController ;
     std::shared_ptr<PendingRequestController> m_pPendingRequestController ;
     Blacklist *m_pBlacklist ;
+
+    // high availability / dialog replication
+    std::shared_ptr<DialogStore> m_pDialogStore ;
+    int m_bHaEnabled ;
+    int m_bRecoverOnStart ;
+    string m_haInstanceId ;
+    string m_haRedisAddress ;
+    string m_haRedisSentinels ;
+    string m_haRedisMaster ;
+    string m_haRedisPassword ;
+    unsigned int m_haRedisPort ;
+    unsigned int m_haOwnershipTtlSecs ;
+
+    void recoverDialogsFromRedis(void) ;
+    void initDialogStore(void) ;
+    nta_leg_t* recreateLeg(const DialogState& state) ;
 
     std::shared_ptr<StackMsg> m_lastSentMsg ;
     std::shared_ptr<StackMsg> m_lastRecvMsg ;

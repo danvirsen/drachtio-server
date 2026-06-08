@@ -536,6 +536,31 @@ namespace drachtio {
         m_mapDialogs.erase( it ) ;
         DR_LOG(log_info) << "ClientController::removeDialog - after removing dialogs count is now: " << m_mapDialogs.size()  ;
     }
+    bool ClientController::getAppNameForDialog( const string& dialogId, string& appName ) {
+        std::lock_guard<std::mutex> l( m_lock ) ;
+        mapDialogId2Appname::iterator it = m_mapDialogId2Appname.find( dialogId ) ;
+        if( m_mapDialogId2Appname.end() == it ) return false ;
+        appName = it->second ;
+        return true ;
+    }
+
+    bool ClientController::reattachDialog( client_ptr client, const string& dialogId, const string& appName ) {
+        /* confirm the dialog actually exists in the stack (recovered or live) before binding */
+        std::shared_ptr<SipDialog> dlg ;
+        if( !getDialogController()->findDialogById( dialogId, dlg ) ) {
+            DR_LOG(log_warning) << "ClientController::reattachDialog - no such dialog in stack: " << dialogId ;
+            return false ;
+        }
+        std::lock_guard<std::mutex> l( m_lock ) ;
+        m_mapDialogs[ dialogId ] = client ;
+        string app = appName ;
+        if( app.empty() ) client->getAppName( app ) ;
+        if( !app.empty() ) m_mapDialogId2Appname[ dialogId ] = app ;
+        DR_LOG(log_info) << "ClientController::reattachDialog - reattached dialog " << dialogId
+            << " to reconnected client; tracking " << m_mapDialogs.size() << " dialogs" ;
+        return true ;
+    }
+
     client_ptr ClientController::findClientForDialog( const string& dialogId ) {
         std::lock_guard<std::mutex> l( m_lock ) ;
         return findClientForDialog_nolock( dialogId ) ;
