@@ -6,8 +6,9 @@
 
 namespace drachtio {
 
-  /* SIGHUP re-reads the configuration and reloads the TLS/WSS certificates
-     from their files, so a renewed certificate is used without a restart.
+  /* SIGHUP re-reads the configuration and reloads the TLS/WSS certificates,
+     and the admin port's, from their files, so a renewed certificate is used
+     without a restart.
      The signal handler only writes to a pipe; the work runs on the sofia
      thread, which owns the transports. Calls in progress keep the
      connections, and the certificate, they already have. */

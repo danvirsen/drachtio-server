@@ -26,6 +26,8 @@ namespace {
     else if (n > 0) {
       DR_LOG(drachtio::log_notice) << "SIGHUP: reloaded the TLS certificate on " << n << " transport(s)";
     }
+
+    if (auto clients = theOneAndOnlyController->getClientController()) clients->reloadTlsFiles();
     return 0;
   }
 
