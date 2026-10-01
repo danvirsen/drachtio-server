@@ -357,7 +357,13 @@ namespace drachtio {
 
         //DR_LOG(log_debug) << "Client::read_handler read raw message of " << bytes_transferred << " bytes: " << std::string(m_readBuf.begin(), m_readBuf.begin() + bytes_transferred) << endl ;
 
-        /* append the data to our in-process buffer */
+        /* append the data to our in-process buffer, growing it so a partial frame is never overwritten: by doubling,
+           up to one frame of the longest length a 5-digit specifier allows plus one read */
+        const size_t needed = m_buffer.size() + bytes_transferred ;
+        if( needed > m_buffer.capacity() ) {
+            const size_t bound = 99999 + m_readBuf.size() ;
+            m_buffer.set_capacity( std::max( needed, std::min( bound, 2 * m_buffer.capacity() ) ) ) ;
+        }
         m_buffer.insert( m_buffer.end(), m_readBuf.begin(),  m_readBuf.begin() + bytes_transferred ) ;
 
         /* if we're starting a new message, parse the message length */
