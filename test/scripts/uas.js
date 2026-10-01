@@ -190,6 +190,35 @@ class App extends Emitter {
     return this;
   }
 
+  answerUpdateWithMultipart() {
+    this.srf.invite((req, res) => {
+      const localSdp = req.body.replace(/m=audio\s+(\d+)/, 'm=audio 15000');
+      this.srf.createUAS(req, res, {localSdp})
+        .then((uas) => {
+          this.emit('connected');
+          uas.on('update', (req, res) => {
+            const sdp = req.body.replace(/m=audio\s+(\d+)/, 'm=audio 16000').trimEnd();
+            res.send(200, {
+              headers: {'Content-Type': 'multipart/mixed;boundary=drachtio-test-boundary'},
+              body: '--drachtio-test-boundary\r\n' +
+                'Content-Type: application/sdp\r\n\r\n' +
+                `${sdp}\r\n` +
+                '--drachtio-test-boundary\r\n' +
+                'Content-Type: text/plain\r\n\r\n' +
+                'not sdp\r\n' +
+                '--drachtio-test-boundary--\r\n'
+            });
+          });
+          uas.on('destroy', () => debug('received BYE from uac'));
+        })
+        .catch((err) => {
+          console.error(`Uas: failed to connect: ${err}`);
+        });
+    });
+
+    return this;
+  }
+
   handleReinvite(sdp, delay) {
     this.srf.invite((req, res) => {
 

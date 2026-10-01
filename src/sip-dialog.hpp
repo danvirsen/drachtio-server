@@ -121,6 +121,9 @@ namespace drachtio {
 		void setLocalSdp(const char* data, unsigned int len) { m_localEndpoint.m_strSdp.assign( data, len );}
 		void setRemoteSdp(const char* sdp) { m_remoteEndpoint.m_strSdp.assign( sdp );}
 		void setRemoteSdp(const char* data, unsigned int len) { m_remoteEndpoint.m_strSdp.assign( data, len );}
+		bool updateLocalSdp( const std::string& contentType, const std::string& body ) ;
+		bool updateLocalSdp( sip_t const* sip ) ;
+		bool updateRemoteSdp( sip_t const* sip ) ;
 		void setRemoteContentType( std::string& type ) { m_remoteEndpoint.m_strContentType = type ; }
 		void setLocalContentType( std::string& type ) { m_localEndpoint.m_strContentType = type ; }
 		void setRemoteSignalingAddress( const char* szAddress ) { m_remoteEndpoint.m_strSignalingAddress = szAddress; }

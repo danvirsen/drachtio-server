@@ -91,12 +91,7 @@ namespace drachtio {
         DR_LOG(log_debug) << "SipDialog::SipDialog - creating sip UAS dialog with call-id " << getCallId() <<
             " leg " << std::hex << (void *) m_leg;
 
-		if( sip->sip_payload ) this->setRemoteSdp( sip->sip_payload->pl_data, sip->sip_payload->pl_len ) ;
-		if( sip->sip_content_type ) {
-			string hvalue ;
-			parseGenericHeader( sip->sip_content_type->c_common, hvalue ) ;
-			if( !hvalue.empty() ) this->setRemoteContentType( hvalue ) ;			
-		}
+		this->updateRemoteSdp( sip ) ;
 
 		// UDP nat check: if no Record-Route and Contact != source address:port, then set a RouteUri to the source address:port
 		// update: if there is a Record-Route and topmost Record-Route has nat=yes in the url param, do the same as above
@@ -164,12 +159,7 @@ namespace drachtio {
 		if( ltag ) this->setLocalTag( ltag ) ;
 		assert(ltag); // should always have a from tag on incoming invite
 
-		if( sip->sip_payload ) this->setLocalSdp( sip->sip_payload->pl_data, sip->sip_payload->pl_len ) ;
-		if( sip->sip_content_type ) {
-			string hvalue ;
-			parseGenericHeader( sip->sip_content_type->c_common, hvalue ) ;
-			if( !hvalue.empty() ) this->setLocalContentType( hvalue ) ;			
-		}
+		this->updateLocalSdp( sip ) ;
 
     su_sockaddr_t const *su = msg_addr(msg);
     char name[SU_ADDRSIZE] = "";
@@ -303,6 +293,29 @@ namespace drachtio {
 			}
 		}
 		return tp;
+	}
+
+	/* record the SDP of a body we sent or received; bodies without SDP leave it unchanged */
+	bool SipDialog::updateLocalSdp( const string& contentType, const string& body ) {
+		string sdp ;
+		if( !findSdpInBody( contentType, body, sdp ) ) return false ;
+		m_localEndpoint.m_strSdp = sdp ;
+		m_localEndpoint.m_strContentType = "application/sdp" ;
+		return true ;
+	}
+	bool SipDialog::updateLocalSdp( sip_t const* sip ) {
+		string sdp ;
+		if( !findSdpInMsg( sip, sdp ) ) return false ;
+		m_localEndpoint.m_strSdp = sdp ;
+		m_localEndpoint.m_strContentType = "application/sdp" ;
+		return true ;
+	}
+	bool SipDialog::updateRemoteSdp( sip_t const* sip ) {
+		string sdp ;
+		if( !findSdpInMsg( sip, sdp ) ) return false ;
+		m_remoteEndpoint.m_strSdp = sdp ;
+		m_remoteEndpoint.m_strContentType = "application/sdp" ;
+		return true ;
 	}
 
 	void SipDialog::setSessionTimer( unsigned long nSecs, SessionRefresher_t whoIsResponsible ) {

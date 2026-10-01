@@ -155,6 +155,10 @@ namespace drachtio {
 
 	void parseGenericHeader( msg_common_t* p, std::string& hvalue) ;
 
+	bool findSdpInBody( const std::string& contentType, const std::string& body, std::string& sdp ) ;
+
+	bool findSdpInMsg( const sip_t* sip, std::string& sdp ) ;
+
 	bool isImmutableHdr( const std::string& hdr ) ;
 
 	bool getTagTypeForHdr( const std::string& hdr, tag_type_t& tag ) ;

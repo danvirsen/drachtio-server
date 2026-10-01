@@ -155,6 +155,19 @@ class App extends Emitter {
     return this;
   }
 
+  callLateOffer(uri) {
+    this.srf.createUAC(uri, {noAck: true})
+      .then(({sdp, ack}) => ack(sdp.replace(/m=audio\s+(\d+)/, 'm=audio 17000')))
+      .then((uac) => {
+        this.uac = uac;
+        uac.on('destroy', () => { debug('received BYE from uas');});
+      })
+      .catch((err) => {
+        this.emit('fail', err);
+      });
+    return this;
+  }
+
   hangup() {
     assert(this.uac);
     const p = this.srf.destroy(this.uac);

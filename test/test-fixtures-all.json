@@ -171,6 +171,20 @@
   },
   {
     "server": {"config": "drachtio.conf.xml", "args": ["--memory-debug"]},
+    "script": {"name": "uas", "function": "answerUpdateWithMultipart"},
+    "uac": {"name": "uac-update-then-refresh.xml", "target": "127.0.0.1:5090"},
+    "message": "reinvite: refresh carries the SDP answered to an UPDATE in a multipart body",
+    "timeout": 100000
+  },
+  {
+    "server": {"config": "drachtio.conf.xml", "args": ["--memory-debug"]},
+    "script": {"name": "uac", "function": "callLateOffer", "args": "sip:127.0.0.1:5096"},
+    "uas": {"name": "uas-late-offer-then-refresh.xml", "port": 5096},
+    "message": "reinvite: refresh carries the SDP answered in the ACK to a late offer",
+    "timeout": 100000
+  },
+  {
+    "server": {"config": "drachtio.conf.xml", "args": ["--memory-debug"]},
     "uac": {"name": "uac-expect-503.xml", "target": "127.0.0.1:5090"},
     "message": "connection tests: send 503 when no apps connected"
   },

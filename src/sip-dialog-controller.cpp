@@ -339,10 +339,9 @@ namespace drachtio {
                     throw std::runtime_error("missing content-type") ;                   
                 }
             }
-            if( sip_method_invite == method && body.length() && 0 == contentType.compare("application/sdp")) {
-                DR_LOG(log_debug) << "SipDialogController::doSendRequestInsideDialog - updating local sdp to " << body ;
-                dlg->setLocalSdp( body.c_str() ) ;
-                dlg->setLocalContentType(contentType);
+            if( (sip_method_invite == method || sip_method_update == method || sip_method_ack == method) &&
+                dlg->updateLocalSdp( contentType, body ) ) {
+                DR_LOG(log_debug) << "SipDialogController::doSendRequestInsideDialog - updated local sdp to " << dlg->getLocalEndpoint().m_strSdp ;
             }
 
             if (dlg->getRouteUri(routeUri)) {
@@ -902,9 +901,7 @@ namespace drachtio {
 
             //update dialog variables            
             dlg->setSipStatus( sip->sip_status->st_status ) ;
-            if( sip->sip_payload ) {
-                iip->dlg()->setRemoteSdp( sip->sip_payload->pl_data, sip->sip_payload->pl_len ) ;
-            }
+            iip->dlg()->updateRemoteSdp( sip ) ;
 
             // stats
             if (theOneAndOnlyController->getStatsCollector().enabled()) {
@@ -1238,9 +1235,14 @@ namespace drachtio {
                         dialogId = dlg->getDialogId();
                         dlg->removeIncomingRequestTransaction(transactionId);
                         DR_LOG(log_debug) << "SipDialogController::doRespondToSipRequest retrieved dialog id for existing dialog " << dialogId  ;
-                        if (sip->sip_request->rq_method == sip_method_invite && body.length() && bSentOK) {
-                            DR_LOG(log_debug) << "SipDialogController::doRespondToSipRequest updating local sdp for dialog " << dialogId  ;
-                            dlg->setLocalSdp( body.c_str() ) ;
+                        if ((sip->sip_request->rq_method == sip_method_invite || sip->sip_request->rq_method == sip_method_update) && bSentOK) {
+                            string localContentType ;
+                            if (!searchForHeader( tags, siptag_content_type_str, localContentType )) localContentType = contentType ;
+                            if (dlg->updateLocalSdp( localContentType, body )) {
+                                DR_LOG(log_debug) << "SipDialogController::doRespondToSipRequest updating local sdp for dialog " << dialogId  ;
+                            }
+                            /* a 2xx accepts the offer in the request */
+                            if (code >= 200 && code < 300) dlg->updateRemoteSdp( sip ) ;
                         }
                     }
                 }
@@ -1293,6 +1295,12 @@ namespace drachtio {
                       " - this is usually because the application provided a syntactically-invalid header";
                   bSentOK = false ;
                   failMsg = "Unknown server error sending response" ;
+              }
+              else if (code >= 200 && code < 300) {
+                  string localContentType ;
+                  if (!searchForHeader( tags, siptag_content_type_str, localContentType )) localContentType = contentType ;
+                  dlg->updateLocalSdp( localContentType, body ) ;
+                  dlg->updateRemoteSdp( sip ) ;
               }
               msg_destroy(msg); // release the reference
             }
@@ -1392,18 +1400,15 @@ namespace drachtio {
                     /* update local sdp if provided */
                     string strLocalSdp ;
                     if( !body.empty()  ) {
-                        dlg->setLocalSdp( body.c_str() ) ;
                         string strLocalContentType ;
-                        if( searchForHeader( tags, siptag_content_type_str, strLocalContentType ) ) {
-                            dlg->setLocalContentType( strLocalContentType ) ;
-                        }
-                        else {
+                        if( !searchForHeader( tags, siptag_content_type_str, strLocalContentType ) ) {
                             /* set content-type if we can detect it */
                             if( 0 == body.find("v=0") ) {
                                 contentType = "application/sdp" ;
-                                dlg->setLocalContentType( contentType ) ;
+                                strLocalContentType = contentType ;
                             }
                         }
+                        dlg->updateLocalSdp( strLocalContentType, body ) ;
                     }
 
                     /* set session timer if required */
@@ -1680,6 +1685,8 @@ namespace drachtio {
                     this->clearSipTimers(dlg);
                     //addDialog( dlg ) ;  now adding when we send the 200 OK
                 }
+                /* an ACK with a body carries the answer to the offer in our 2xx */
+                dlg->updateRemoteSdp( sip ) ;
                 string encodedMessage ;
                 msg_t* msg = nta_incoming_getrequest( irq ) ; // adds a reference
                 EncodeStackMessage( sip, encodedMessage ) ;
@@ -1960,6 +1967,13 @@ namespace drachtio {
             
             m_pController->getClientController()->route_response_inside_transaction( encodedMessage, meta, orq, sip, rip->getTransactionId(), rip->getDialogId() ) ;            
 
+            /* a 2xx to our re-INVITE or UPDATE carries the peer's new SDP */
+            if ((method == sip_method_invite || method == sip_method_update) && statusCode >= 200 && statusCode < 300) {
+                std::shared_ptr<SipDialog> dlg ;
+                nta_leg_t* leg = nta_leg_by_call_id(m_pController->getAgent(), sip->sip_call_id->i_id);
+                if (leg && findDialogByLeg( leg, dlg )) dlg->updateRemoteSdp( sip ) ;
+            }
+
             if (method == sip_method_invite && 200 == statusCode) {
                 tport_t *tp = nta_outgoing_transport(orq) ; // takes a ref on the tport..
                 // start a timerD for this successful reINVITE
@@ -2066,6 +2080,7 @@ namespace drachtio {
                         SipDialog::we_are_refresher :
                         SipDialog::they_are_refresher ) ;
             }
+            dlg->updateRemoteSdp( sip ) ;
 
             if( sip->sip_contact ) {
                 string routeUri ;
@@ -2179,6 +2194,8 @@ namespace drachtio {
             std::shared_ptr<SipDialog> dlg = iip->dlg(); 
             IIP_Clear(m_invitesInProgress, iip);
             this->clearSipTimers(dlg);
+            /* an ACK with a body carries the answer to the offer in our 2xx */
+            dlg->updateRemoteSdp( sip ) ;
 
             string transactionId ;
             generateUuid( transactionId ) ;

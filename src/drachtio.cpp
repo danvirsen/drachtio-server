@@ -325,6 +325,65 @@ namespace drachtio {
         if( std::distance( tok.begin(), tok.end() ) > 1 ) hvalue = *(++tok.begin() ) ;
  	}
 
+	/* the SDP in a body: the body itself if it is application/sdp, else the application/sdp part of a multipart body */
+	bool findSdpInBody( const string& contentType, const string& body, string& sdp ) {
+		auto mediaType = [](const string& value) {
+			return boost::to_lower_copy( boost::trim_copy( value.substr( 0, value.find(';') ) ) ) ;
+		} ;
+		if( body.empty() ) return false ;
+
+		string type = mediaType( contentType ) ;
+		if( type.empty() && 0 == body.find("v=0") ) type = "application/sdp" ;
+		if( type == "application/sdp" ) {
+			sdp = body ;
+			return true ;
+		}
+		if( 0 != type.find("multipart/") ) return false ;
+
+		std::smatch mr ;
+		if( !std::regex_search( contentType, mr, std::regex("boundary\\s*=\\s*\"?([^\";]+)", std::regex::icase) ) ) return false ;
+		const string delimiter = "--" + boost::trim_copy( mr[1].str() ) ;
+
+		enum { preamble, headers, content } state = preamble ;
+		string line, partType, partBody ;
+		std::istringstream in( body ) ;
+		while( std::getline( in, line ) ) {
+			if( !line.empty() && '\r' == line.back() ) line.pop_back() ;
+			if( 0 == line.compare( 0, delimiter.length(), delimiter ) ) {
+				if( content == state && mediaType( partType ) == "application/sdp" ) {
+					sdp = boost::trim_right_copy( partBody ) + "\r\n" ;
+					return true ;
+				}
+				if( 0 == line.compare( delimiter.length(), 2, "--" ) ) break ;
+				state = headers ;
+				partType.clear() ;
+				partBody.clear() ;
+			}
+			else if( headers == state ) {
+				size_t colon = line.find(':') ;
+				if( line.empty() ) state = content ;
+				else if( string::npos != colon ) {
+					string name = boost::trim_copy( line.substr( 0, colon ) ) ;
+					if( boost::iequals( name, "content-type" ) || boost::iequals( name, "c" ) ) partType = line.substr( colon + 1 ) ;
+				}
+			}
+			else if( content == state ) {
+				partBody.append( line ).append( "\r\n" ) ;
+			}
+		}
+		return false ;
+	}
+
+	bool findSdpInMsg( const sip_t* sip, string& sdp ) {
+		if( !sip->sip_payload || !sip->sip_payload->pl_data ) return false ;
+		string contentType ;
+		if( sip->sip_content_type && sip->sip_content_type->c_type ) {
+			contentType = sip->sip_content_type->c_type ;
+			for( msg_param_t const* p = sip->sip_content_type->c_params; p && *p; p++ ) contentType.append( ";" ).append( *p ) ;
+		}
+		return findSdpInBody( contentType, string( sip->sip_payload->pl_data, sip->sip_payload->pl_len ), sdp ) ;
+	}
+
     bool FindCSeqMethod( const string& headers, string& method ) {
         try {
             std::regex re("^CSeq:\\s+\\d+\\s+(\\w+)$");
