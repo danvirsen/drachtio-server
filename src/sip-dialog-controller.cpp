@@ -1847,6 +1847,24 @@ namespace drachtio {
                         case sip_method_message:
                         case sip_method_publish:
                         case sip_method_subscribe:
+                        {
+                            /* a client the out-of-dialog routes pick gets it on this irq, so that its answer reaches the caller */
+                            string httpMethod, httpUrl ;
+                            bool verifyPeer ;
+                            if( !m_pController->getRequestRouter().getRoute( sip->sip_request->rq_method_name, httpMethod, httpUrl, verifyPeer ) ) {
+                                if( !routeEarlyDialogRequest( irq, sip, transactionId, encodedMessage, meta ) ) {
+                                    DR_LOG(log_info) << "SipDialogController::processRequestInsideDialog: no client for "
+                                        << sip->sip_request->rq_method_name << " during invite-in-progress";
+                                    dlg->removeIncomingRequestTransaction(transactionId);
+                                    STATS_COUNTER_INCREMENT(STATS_COUNTER_SIP_RESPONSES_OUT, {{"method", sip->sip_request->rq_method_name},{"code", "503"}})
+                                    nta_incoming_treply( irq, SIP_503_SERVICE_UNAVAILABLE, TAG_END() ) ;
+                                    nta_incoming_destroy( irq ) ;
+                                    return 0 ;
+                                }
+                                routed = true ;
+                                break ;
+                            }
+                        }
                             // Pass irq so processMessageStatelessly sends any rejection
                             // (e.g. 503 when no client/route is available) on the irq via
                             // nta_incoming_treply rather than via the stateless
@@ -1941,6 +1959,30 @@ namespace drachtio {
         }
         return rc ;
     }
+    /* a request in the early dialog of an invite in progress, delivered as a new request to a client that routes its method */
+    bool SipDialogController::routeEarlyDialogRequest( nta_incoming_t* irq, sip_t const* sip, const string& transactionId,
+        const string& encodedMessage, SipMsgData_t& meta ) {
+        std::shared_ptr<ClientController> cc = m_pController->getClientController() ;
+        client_ptr client = cc->selectClientForRequestOutsideDialog( sip->sip_request->rq_method_name ) ;
+        if( !client ) return false ;
+
+        tport_t* tp = nta_incoming_transport( m_pController->getAgent(), irq, NULL ) ;
+        if( tp ) {
+            const tp_name_t* tpn = tport_name( tport_parent( tp ) ) ;
+            string host = tpn->tpn_host ;
+            string port = tpn->tpn_port ;
+            meta.setDestAddress( host ) ;
+            meta.setDestPort( port ) ;
+            tport_unref( tp ) ;
+        }
+        DR_LOG(log_info) << "SipDialogController::routeEarlyDialogRequest: " << sip->sip_request->rq_method_name
+            << " during invite-in-progress goes to a client routing it, transaction " << transactionId ;
+        cc->addNetTransaction( client, transactionId ) ;
+        void (BaseClient::*fn)(const string&, const string&, const SipMsgData_t&) = &BaseClient::sendSipMessageToClient;
+        cc->getIOService().post( std::bind(fn, client, transactionId, encodedMessage, meta) ) ;
+        return true ;
+    }
+
     int SipDialogController::processResponseInsideDialog( nta_outgoing_t* orq, sip_t const* sip )  {
         trackTportLiveness(orq, sip);
         DR_LOG(log_debug) << "SipDialogController::processResponseInsideDialog: "  ;

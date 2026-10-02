@@ -187,6 +187,7 @@ namespace drachtio {
 
 		//NB: processXXX are called when an incoming message is received from the network
     int processRequestInsideDialog( nta_leg_t* leg, nta_incoming_t* irq, sip_t const *sip) ;
+    bool routeEarlyDialogRequest( nta_incoming_t* irq, sip_t const* sip, const string& transactionId, const string& encodedMessage, SipMsgData_t& meta ) ;
     int processResponseOutsideDialog( nta_outgoing_t* request, sip_t const* sip )  ;
     int processResponseInsideDialog( nta_outgoing_t* request, sip_t const* sip ) ;
 		int processResponseToRefreshingReinvite( nta_outgoing_t* request, sip_t const* sip ) ;

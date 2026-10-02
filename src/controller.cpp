@@ -1680,6 +1680,8 @@ namespace drachtio {
                         }
 
                         string transactionId ;
+                        /* the irq keeps its own reference to the request: a pending request takes another */
+                        if( irq ) msg_ref_create( msg ) ;
                         int status = m_pPendingRequestController->processNewRequest( msg, sip, tp_incoming, transactionId ) ;
 
                         //write attempt record	
@@ -1705,6 +1707,7 @@ namespace drachtio {
                                 if( isInvite ) {
                                     Cdr::postCdr( std::make_shared<CdrStop>( msg, "application", Cdr::call_rejected ) );
                                 }
+                                msg_destroy( msg ) ;   // no pending request took the reference added above
                             }
                             else {
                                 msg_t* reply = nta_msg_create(m_nta, 0) ;
