@@ -1210,8 +1210,6 @@ namespace drachtio {
              DR_LOG(log_notice) << "DrachtioController::run listening for applications on tcp port " << adminTcpPort << " and tls port " << adminTlsPort ;
            m_pClientController.reset(new ClientController(this, adminAddress, adminTcpPort, adminTlsPort, tlsChainFile, tlsCertFile, tlsKeyFile, dhParam));
         }
-        m_pClientController->start();
-        
         // mtu
         /*
         if (!m_mtu) m_mtu = m_Config->getMtu();
@@ -1438,6 +1436,9 @@ namespace drachtio {
         m_pDialogController = std::make_shared<SipDialogController>( this, &m_clone ) ;
         m_pProxyController = std::make_shared<SipProxyController>( this, &m_clone ) ;
         m_pPendingRequestController = std::make_shared<PendingRequestController>( this ) ;
+
+        // only now: an application that connects at once is handled by these controllers
+        m_pClientController->start();
 
         // set sip timers
         unsigned int t1, t2, t4, t1x64 ;

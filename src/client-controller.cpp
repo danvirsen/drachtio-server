@@ -678,7 +678,8 @@ namespace drachtio {
         m_acceptor_tcp.cancel() ;
         m_acceptor_tls.cancel() ;
         m_ioservice.stop() ;
-        m_thread.join() ;
+        // not started when run() gave up before it got that far
+        if( m_thread.joinable() ) m_thread.join() ;
     }
 
  }
