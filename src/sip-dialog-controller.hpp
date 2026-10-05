@@ -185,6 +185,14 @@ namespace drachtio {
         void doRespondToSipRequest( SipMessageData* pData ) ;	
 		void doSendCancelRequest( SipMessageData* pData ) ;
 
+		/* a client has disconnected: the requests it was handed and the INVITEs it sent, by transaction id */
+		struct ClientLeftData {
+			std::vector<string> netTransactions ;
+			std::vector<string> appTransactions ;
+		} ;
+		void clientLeft( const std::vector<string>& netTransactions, const std::vector<string>& appTransactions ) ;
+		void doClientLeft( ClientLeftData* pData ) ;
+
 		//NB: processXXX are called when an incoming message is received from the network
     int processRequestInsideDialog( nta_leg_t* leg, nta_incoming_t* irq, sip_t const *sip) ;
     int processResponseOutsideDialog( nta_outgoing_t* request, sip_t const* sip )  ;
@@ -195,6 +203,7 @@ namespace drachtio {
 
     void notifyRefreshDialog( std::shared_ptr<SipDialog> dlg ) ;
     void notifyTerminateStaleDialog( std::shared_ptr<SipDialog> dlg, bool ackbye = false ) ;
+    void ackByeForDepartedClient( std::shared_ptr<SipDialog> dlg, sip_t const* sip ) ;
     void timeoutBye( string transactionId ) ;
 
     void notifyCancelTimeoutReachedIIP( std::shared_ptr<IIP> dlg ) ;

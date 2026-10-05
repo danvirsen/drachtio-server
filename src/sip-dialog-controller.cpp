@@ -84,6 +84,11 @@ namespace {
         STATS_COUNTER_INCREMENT(STATS_COUNTER_SIP_REQUESTS_IN, {{"method", "CANCEL"}})
         pController->getDialogController()->doSendCancelRequest( d ) ;
     }
+    void cloneClientLeft(su_root_magic_t* p, su_msg_r msg, void* arg ) {
+        drachtio::DrachtioController* pController = reinterpret_cast<drachtio::DrachtioController*>( p ) ;
+        drachtio::SipDialogController::ClientLeftData* d = reinterpret_cast<drachtio::SipDialogController::ClientLeftData*>( arg ) ;
+        pController->getDialogController()->doClientLeft( d ) ;
+    }
     int uacLegCallback( nta_leg_magic_t* p, nta_leg_t* leg, nta_incoming_t* irq, sip_t const *sip) {
         if( sip && sip->sip_request ) STATS_COUNTER_INCREMENT(STATS_COUNTER_SIP_REQUESTS_IN, {{"method", sip->sip_request->rq_method_name}})
         drachtio::DrachtioController* pController = reinterpret_cast<drachtio::DrachtioController*>( p ) ;
@@ -813,6 +818,51 @@ namespace drachtio {
         deleteTags(tags);
    }
 
+    void SipDialogController::clientLeft( const std::vector<string>& netTransactions, const std::vector<string>& appTransactions ) {
+        if( netTransactions.empty() && appTransactions.empty() ) return ;
+        su_msg_r msg = SU_MSG_R_INIT ;
+        if( su_msg_create( msg, su_clone_task(*m_pClone), su_root_task(m_pController->getRoot()), cloneClientLeft, sizeof( ClientLeftData ) ) < 0 ) return ;
+        new(su_msg_data( msg )) ClientLeftData{ netTransactions, appTransactions } ;
+        su_msg_send( msg ) ;
+    }
+
+    /* nobody can answer these any more: refuse what the client left unanswered and cancel what it left ringing */
+    void SipDialogController::doClientLeft( ClientLeftData* pData ) {
+        for( const auto& transactionId : pData->netTransactions ) {
+            std::shared_ptr<IIP> iip ;
+            nta_incoming_t* irq = nullptr ;
+            bool unanswered ;
+            bool bye = false ;
+            if( IIP_FindByTransactionId( m_invitesInProgress, transactionId, iip ) ) {
+                unanswered = iip->role() == uas_role && iip->irq() && nta_incoming_status( iip->irq() ) < 200 ;
+            }
+            else if( findIrqByTransactionId( transactionId, irq ) ) {
+                unanswered = nta_incoming_status( irq ) < 200 ;
+                bye = sip_method_bye == nta_incoming_method( irq ) ;   // its dialog has already ended
+            }
+            else {
+                string method ;
+                unanswered = m_pController->getPendingRequestController()->getMethodForRequest( transactionId, method ) ;
+            }
+            if( !unanswered ) continue ;
+
+            const char* status = bye ? "SIP/2.0 200 OK" : "SIP/2.0 480 Temporarily Unavailable" ;
+            DR_LOG(log_info) << "SipDialogController::doClientLeft - answering " << status << " to a request its client left unanswered, transaction " << transactionId ;
+            respondToSipRequest( "", transactionId, status, "", "" ) ;
+        }
+        for( const auto& transactionId : pData->appTransactions ) {
+            std::shared_ptr<IIP> iip ;
+            if( !IIP_FindByTransactionId( m_invitesInProgress, transactionId, iip ) || iip->role() != uac_role || iip->isCanceled() ) continue ;
+            nta_outgoing_t* orq = const_cast<nta_outgoing_t*>( iip->orq() ) ;
+            if( !orq || nta_outgoing_status( orq ) >= 200 ) continue ;
+
+            DR_LOG(log_info) << "SipDialogController::doClientLeft - canceling an INVITE its client left ringing, transaction " << transactionId ;
+            iip->setCanceled() ;
+            nta_outgoing_cancel( orq ) ;
+        }
+        pData->~ClientLeftData() ;
+    }
+
     void SipDialogController::trackTportLiveness(nta_outgoing_t* orq, sip_t const* sip) {
         unsigned int N = m_pController->getTportMaxConsecutiveTimeouts();
         if (0 == N) return; // feature disabled: no map access, no tport calls
@@ -1027,11 +1077,17 @@ namespace drachtio {
             if( sip->sip_status->st_status >= 200 ) this->clearRIP( orq ) ;
         }
         
+        bool routed ;
         if( !dlg ) {
-            m_pController->getClientController()->route_response_inside_transaction( encodedMessage, meta, orq, sip, transactionId ) ;
+            routed = m_pController->getClientController()->route_response_inside_transaction( encodedMessage, meta, orq, sip, transactionId ) ;
         }
         else {
-            m_pController->getClientController()->route_response_inside_transaction( encodedMessage, meta, orq, sip, transactionId, dlg->getDialogId() ) ;            
+            routed = m_pController->getClientController()->route_response_inside_transaction( encodedMessage, meta, orq, sip, transactionId, dlg->getDialogId() ) ;
+        }
+        /* a 200 that crossed the CANCEL of an INVITE whose client has left: no client will ACK it, which is
+           when drachtio would send the ACK and BYE, so it sends them now */
+        if( !routed && dlg && dlg->isAckBye() && sip_method_invite == sip->sip_cseq->cs_method && 200 == sip->sip_status->st_status ) {
+            ackByeForDepartedClient( dlg, sip ) ;
         }
 
         if( sip->sip_cseq->cs_method == sip_method_invite) {
@@ -2321,6 +2377,37 @@ namespace drachtio {
         }
         SD_Clear(m_dialogs, dlg) ;
     }
+    /* ACKs a 200 that crossed the CANCEL of a departed client's INVITE, then hangs the call up */
+    void SipDialogController::ackByeForDepartedClient( std::shared_ptr<SipDialog> dlg, sip_t const* sip ) {
+        nta_leg_t* leg = const_cast<nta_leg_t*>( dlg->getNtaLeg() ) ;
+        if( leg && sip->sip_contact ) {
+            string routeUri ;
+            dlg->getRouteUri( routeUri ) ;
+            tport_t* tp = dlg->getTport() ; // borrowed pointer; do not unref
+            char cseq[32] ;
+            snprintf( cseq, sizeof(cseq), "%u ACK", sip->sip_cseq->cs_seq ) ;
+            nta_outgoing_t* ack = nta_outgoing_tcreate( leg, NULL, NULL,
+                routeUri.empty() ? NULL : URL_STRING_MAKE(routeUri.c_str()),
+                SIP_METHOD_ACK,
+                (url_string_t*) sip->sip_contact->m_url,
+                SIPTAG_CSEQ_STR(cseq),
+                TAG_IF(tp, NTATAG_TPORT(tp)),
+                TAG_END() ) ;
+            if( ack ) {
+                STATS_COUNTER_INCREMENT(STATS_COUNTER_SIP_REQUESTS_OUT, {{"method", "ACK"}})
+                DR_LOG(log_info) << "SipDialogController::ackByeForDepartedClient - sent ACK " << cseq << " for " << dlg->getDialogId() ;
+                /* kept for a retransmitted 200, as the ACK a client sends */
+                tport_t* ackTp = nta_outgoing_transport( ack ) ;   // takes a reference
+                if( tport_is_dgram( ackTp ) ) m_timerDHandler.addAck( ack ) ;
+                else nta_outgoing_destroy( ack ) ;
+                if( ackTp ) tport_unref( ackTp ) ;
+            }
+            else DR_LOG(log_error) << "SipDialogController::ackByeForDepartedClient - failed to send ACK for " << dlg->getDialogId() ;
+        }
+        else DR_LOG(log_error) << "SipDialogController::ackByeForDepartedClient - unable to ACK the 200 for " << dlg->getDialogId() ;
+        notifyTerminateStaleDialog( dlg, true ) ;
+    }
+
     void SipDialogController::notifyCancelTimeoutReachedIIP( std::shared_ptr<IIP> iip ) {
         DR_LOG(log_info) << "SipDialogController::notifyCancelTimeoutReachedIIP - tearing down transaction id " << iip->getTransactionId() ;
         m_pController->getClientController()->removeAppTransaction( iip->getTransactionId() ) ;

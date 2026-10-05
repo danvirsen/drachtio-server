@@ -132,6 +132,14 @@ namespace drachtio {
         time_t duration = client->getConnectionDuration();
         DR_LOG(log_info) << "ClientController::leave - Removed client, connection duration " << std::dec << 
             duration << " seconds, count of connected clients is now: " << m_clients.size()  ;
+
+        vector<string> netTransactions, appTransactions ;
+        {
+            std::lock_guard<std::mutex> l( m_lock ) ;
+            for( const auto& kv : m_mapNetTransactions ) if( kv.second.lock() == client ) netTransactions.push_back( kv.first ) ;
+            for( const auto& kv : m_mapAppTransactions ) if( kv.second.lock() == client ) appTransactions.push_back( kv.first ) ;
+        }
+        m_pController->getDialogController()->clientLeft( netTransactions, appTransactions ) ;
     }
     void ClientController::outboundFailed( const string& transactionId ) {
       string headers, body;
