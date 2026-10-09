@@ -243,6 +243,7 @@ namespace drachtio {
 		void addRIP( nta_outgoing_t* orq, std::shared_ptr<RIP> rip) ;
 		bool findRIPByOrq( nta_outgoing_t* orq, std::shared_ptr<RIP>& rip ) ;
         void clearRIP( nta_outgoing_t* orq ) ;
+        void sendTerminatedToClient( nta_outgoing_t* orq, std::shared_ptr<RIP> rip ) ;
         void clearRIPByDialogId( const std::string dialogId) ;
 
 		/// IRQ helpers

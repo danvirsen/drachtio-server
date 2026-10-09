@@ -1927,6 +1927,11 @@ namespace drachtio {
                             std::shared_ptr<RIP> pRIP;
                             if (findRIPByOrq(orq, pRIP)) {
                                 DR_LOG(log_info) << "SipDialogController::processRequestInsideDialog: cleared outstanding RIP due to recv BYE, dialogId is " << txnId  ;
+                                /* the transaction goes with the dialog, so no answer will reach the client that sent the
+                                   re-INVITE: tell it the request was terminated (RFC 3261 15.1.2), or it waits for good */
+                                if( m_pClientController->findClientForAppTransaction( pRIP->getTransactionId() ) ) {
+                                    sendTerminatedToClient( orq, pRIP ) ;
+                                }
                                 m_pClientController->removeAppTransaction(pRIP->getTransactionId());
                                 clearRIP(orq);
                             }
@@ -2231,6 +2236,38 @@ namespace drachtio {
         }
         return 0 ;
     }
+    /* a 487 to the client's request, built from the request itself; nothing goes on the wire */
+    void SipDialogController::sendTerminatedToClient( nta_outgoing_t* orq, std::shared_ptr<RIP> rip ) {
+        msg_t* req = nta_outgoing_getrequest( orq ) ;   // adds a reference
+        sip_t const* rsip = req ? sip_object( req ) : nullptr ;
+        msg_t* m = nta_msg_create( m_agent, 0 ) ;
+        sip_t* sip = m ? sip_object( m ) : nullptr ;
+        if( rsip && sip && 0 == sip_add_tl( m, sip,
+                SIPTAG_STATUS( sip_status_create( msg_home( m ), 487, "Request Terminated", sip_version_2_0 ) ),
+                SIPTAG_VIA( rsip->sip_via ),
+                SIPTAG_FROM( rsip->sip_from ),
+                SIPTAG_TO( rsip->sip_to ),
+                SIPTAG_CALL_ID( rsip->sip_call_id ),
+                SIPTAG_CSEQ( rsip->sip_cseq ),
+                SIPTAG_CONTENT_LENGTH_STR( "0" ),
+                SIPTAG_SEPARATOR_STR( "\r\n" ),
+                TAG_END() ) ) {
+            /* EncodeStackMessage walks the serialized header chain */
+            msg_serialize( m, (msg_pub_t *) sip ) ;
+            string encodedMessage ;
+            EncodeStackMessage( sip, encodedMessage ) ;
+            DR_LOG(log_info) << "SipDialogController::sendTerminatedToClient - 487 to the client for transaction " << rip->getTransactionId() ;
+            /* as a 408 sofia makes for a request that got no answer: clients take responses only from "network" */
+            SipMsgData_t meta( m, orq, "network" ) ;
+            m_pClientController->route_response_inside_transaction( encodedMessage, meta, orq, sip, rip->getTransactionId(), rip->getDialogId() ) ;
+        }
+        else {
+            DR_LOG(log_error) << "SipDialogController::sendTerminatedToClient - unable to build a 487 for transaction " << rip->getTransactionId() ;
+        }
+        if( m ) msg_destroy( m ) ;
+        if( req ) msg_destroy( req ) ;   // releases the reference
+    }
+
     void SipDialogController::notifyRefreshDialog( std::shared_ptr<SipDialog> dlg ) {
         nta_leg_t *leg = const_cast<nta_leg_t *>(dlg->getNtaLeg()) ;
         if( !leg ) {

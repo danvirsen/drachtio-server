@@ -98,6 +98,39 @@ const run = (name, scenario, inCall, {transport = 'u1'} = {}) => {
   });
 };
 
+// the peer hangs up while the app's re-INVITE is out: the BYE takes the re-INVITE's transaction with it, and the
+// app learns that its request was terminated instead of waiting for an answer that cannot come
+if (!process.env.ONLY || 'BYE crosses'.includes(process.env.ONLY)) {
+  test('a BYE that crosses the app\'s re-INVITE ends it with a 487 to the app', async(t) => {
+    let srf, sippP;
+    try { fs.unlinkSync(LOG); } catch (e) { /* not there yet */ }
+    try {
+      await start(null, []);
+      srf = await connect();
+      const dlgP = answer(srf);
+      sippP = execCmd('sipp -sf ./uac-recv-reinvite-send-bye-200.xml 127.0.0.1:5090 -t t1 -m 1 -timeout 20s -timeout_error',
+        {cwd: './scenarios'});
+      sippP.catch(() => {});
+      const dlg = await withTimeout(dlgP, 10000);
+      const destroyed = new Promise((resolve) => dlg.on('destroy', resolve));
+      const status = await withTimeout(dlg.modify(newSdp(dlg)).then(() => 200, (err) => err.status), 5000);
+      t.equal(status, 487, 'the re-INVITE fails with 487 Request Terminated');
+      await withTimeout(destroyed, 5000);
+      await withTimeout(sippP, 25000);
+      t.pass('sipp gets 200 for its BYE');
+    } catch (err) {
+      t.fail(`failed with error ${err}`);
+      if (sippP) await sippP.catch(() => {});
+    }
+    if (srf) srf.disconnect();
+    await stop();
+    const log = fs.readFileSync(LOG, 'utf8');
+    t.equal(lastCount(log, 'RIP size:'), 0, 'no RIPs left after the call');
+    t.equal(lastCount(log, 'IIP size:'), 0, 'no IIPs left after the call');
+    t.end();
+  });
+}
+
 run('re-INVITE answered 100, 180, 200 completes', 'uac-recv-reinvite-180-200', async(t, dlg) => {
   const sdp = await dlg.modify(newSdp(dlg));
   t.ok(sdp, 'app gets the 200 OK after the 180');
